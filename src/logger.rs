@@ -44,7 +44,7 @@ pub enum PixelFormat {
 }
 
 /// The global logger instance used for the `log` crate.
-static LOGGER: Once<LockedLogger> = Once::new();
+pub static LOGGER: Once<LockedLogger> = Once::new();
 
 /// A [`Logger`] instance protected by a spinlock.
 pub struct LockedLogger(SpinMutex<Logger>);
@@ -54,6 +54,14 @@ impl LockedLogger {
     #[inline]
     pub fn new(framebuffer: &'static mut [u8], info: FrameBufferInfo) -> Self {
         Self(SpinMutex::new(Logger::new(framebuffer, info)))
+    }
+
+    /// Force-unlocks the logger to prevent a deadlock.
+    ///
+    /// ## Saftey
+    /// This method is not memory safe and should be only used when absolutely necessary.
+    pub unsafe fn force_unlock(&self) {
+        self.0.force_unlock()
     }
 }
 
@@ -144,6 +152,9 @@ impl Logger {
 
     #[inline]
     fn clear(&mut self) {
+        self.x_pos = 0;
+        self.y_pos = 0;
+
         self.framebuffer.fill(0x00)
     }
 
@@ -186,4 +197,25 @@ pub fn init(framebuffer: &'static mut [u8], info: FrameBufferInfo) {
 
     log::set_logger(logger).expect("Logger already set");
     log::set_max_level(log::LevelFilter::Trace);
+}
+
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => ($crate::logger::_print(format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! println {
+    () => ($crate::rendy::print!("\n"));
+    ($($arg:tt)*) => ($crate::prelude::print!("{}\n", format_args!($($arg)*)));
+}
+
+/// This function is responsible for clearing the screen.
+pub fn clear() {
+    LOGGER.get().map(|l| l.0.lock().clear());
+}
+
+#[doc(hidden)]
+pub fn _print(args: fmt::Arguments) {
+    LOGGER.get().map(|l| l.0.lock().write_fmt(args));
 }

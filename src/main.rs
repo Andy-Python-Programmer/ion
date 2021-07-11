@@ -1,4 +1,4 @@
-#![feature(abi_efiapi, custom_test_frameworks, asm)]
+#![feature(abi_efiapi, custom_test_frameworks, asm, panic_info_message)]
 #![test_runner(crate::test_runner)]
 #![no_std]
 #![no_main]
@@ -6,10 +6,13 @@
 use uefi::prelude::*;
 use uefi::proto::console::gop::GraphicsOutput;
 
-use core::fmt::Write;
 use core::panic::PanicInfo;
 
 mod logger;
+mod menu;
+mod prelude {
+    pub use crate::{print, println};
+}
 
 /// This function is responsible for initializing the logger for Ion and
 /// returns the physical address of the framebuffer.
@@ -51,24 +54,33 @@ fn efi_main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         .expect_success("Failed to clear system stdout");
 
     init_logger(&system_table);
-
-    log::debug!("Hola!");
+    menu::init(&system_table);
 
     loop {}
 }
 
 #[panic_handler]
 extern "C" fn rust_begin_unwind(info: &PanicInfo) -> ! {
-    use uart_16550::SerialPort;
+    unsafe {
+        logger::LOGGER.get().map(|l| l.force_unlock());
+    }
 
-    const SERIAL_IO_PORT: u16 = 0x3F8;
+    let deafult_panic = &format_args!("");
+    let panic_message = info.message().unwrap_or(deafult_panic);
 
-    let mut serial_port = unsafe { SerialPort::new(SERIAL_IO_PORT) };
-    serial_port.init();
+    log::error!("cpu '0' panicked at '{}'", panic_message);
 
-    writeln!(serial_port, "{}", info).unwrap();
+    if let Some(panic_location) = info.location() {
+        log::error!("{}", panic_location);
+    }
 
-    loop {}
+    unsafe {
+        asm!("cli");
+
+        loop {
+            asm!("hlt");
+        }
+    }
 }
 
 #[cfg(test)]
