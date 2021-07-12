@@ -33,17 +33,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e63201c624b8c8883921b1a1accc8916c4fa9dbfb15d122b26e4dde945b86bbf"
 
 [[package]]
-name = "goto"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4a1f4dc1af249b28a85cbb69b39a4fe02dd04498a3addec86d0ef3b6b08132e"
-
-[[package]]
 name = "ion"
 version = "0.1.0"
 dependencies = [
  "font8x8",
- "goto",
  "log",
  "spin",
  "uart_16550",

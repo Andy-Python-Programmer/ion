@@ -87,6 +87,8 @@ struct Logger {
 
     x_pos: usize,
     y_pos: usize,
+
+    scroll_lock: bool,
 }
 
 impl Logger {
@@ -98,6 +100,8 @@ impl Logger {
 
             x_pos: 0x00,
             y_pos: 0x00,
+
+            scroll_lock: false,
         }
     }
 
@@ -175,7 +179,10 @@ impl Logger {
 
     #[inline]
     fn new_line(&mut self) {
-        self.y_pos += 16;
+        if !self.scroll_lock {
+            self.y_pos += 16;
+        }
+
         self.carriage_return();
     }
 }
@@ -213,6 +220,10 @@ macro_rules! println {
 /// This function is responsible for clearing the screen.
 pub fn clear() {
     LOGGER.get().map(|l| l.0.lock().clear());
+}
+
+pub fn set_scroll_lock(lock: bool) {
+    LOGGER.get().map(|l| l.0.lock().scroll_lock = lock);
 }
 
 #[doc(hidden)]

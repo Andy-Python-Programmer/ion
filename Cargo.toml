@@ -8,7 +8,6 @@ uefi = "0.11.0"
 log = "0.4.14"
 spin = "0.9.2"
 uart_16550 = "0.2.15"
-goto = "0.1.2"
 
 [dependencies.font8x8]
 version = "0.2.5"

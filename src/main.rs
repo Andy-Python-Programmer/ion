@@ -1,13 +1,22 @@
-#![feature(abi_efiapi, custom_test_frameworks, asm, panic_info_message)]
+#![feature(
+    abi_efiapi,
+    custom_test_frameworks,
+    asm,
+    panic_info_message,
+    option_result_unwrap_unchecked
+)]
 #![test_runner(crate::test_runner)]
 #![no_std]
 #![no_main]
 
 use uefi::prelude::*;
 use uefi::proto::console::gop::GraphicsOutput;
+use uefi::proto::loaded_image::LoadedImage;
+use uefi::proto::media::fs::SimpleFileSystem;
 
 use core::panic::PanicInfo;
 
+mod config;
 mod logger;
 mod menu;
 mod prelude {
@@ -55,6 +64,27 @@ fn efi_main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
 
     init_logger(&system_table);
     menu::init(&system_table);
+
+    // Query the handle for the loaded image protocol.
+    let loaded_image = system_table
+        .boot_services()
+        .handle_protocol::<LoadedImage>(image_handle)
+        .expect_success("Failed to retrieve loaded image protocokl");
+    let loaded_image = unsafe { &*loaded_image.get() }; // Get the inner cell value
+
+    // Query the handle for the simple file system protocol.
+    let filesystem = system_table
+        .boot_services()
+        .handle_protocol::<SimpleFileSystem>(loaded_image.device())
+        .expect_success("Failed to retrieve simple file system to read disk");
+    let filesystem = unsafe { &mut *filesystem.get() }; // Get the inner cell value
+
+    // Open the root directory of the simple file system volume.
+    let root = filesystem
+        .open_volume()
+        .expect_success("Failed to open volume");
+
+    let _ion_config = config::load(&system_table, root); // Load the config and store it in a local variable.
 
     loop {}
 }
