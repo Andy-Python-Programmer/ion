@@ -213,13 +213,24 @@ macro_rules! print {
 
 #[macro_export]
 macro_rules! println {
-    () => ($crate::rendy::print!("\n"));
+    () => ($crate::prelude::print!("\n"));
     ($($arg:tt)*) => ($crate::prelude::print!("{}\n", format_args!($($arg)*)));
 }
 
 /// This function is responsible for clearing the screen.
 pub fn clear() {
     LOGGER.get().map(|l| l.0.lock().clear());
+}
+
+pub fn set_cursor_pos(x: usize, y: usize) {
+    LOGGER.get().map(|l| {
+        l.0.lock().x_pos = x;
+        l.0.lock().y_pos = y;
+    });
+}
+
+pub fn display_height() -> usize {
+    LOGGER.get().map(|l| l.0.lock().height()).unwrap()
 }
 
 pub fn set_scroll_lock(lock: bool) {

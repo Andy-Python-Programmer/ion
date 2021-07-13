@@ -2,6 +2,7 @@ use uefi::prelude::*;
 use uefi::proto::console::text::{Input, Key, ScanCode};
 use uefi::table::boot::{EventType, TimerTrigger, Tpl};
 
+use crate::config::BootConfigutation;
 use crate::logger;
 use crate::prelude::*;
 
@@ -68,18 +69,21 @@ pub fn pit_sleep_and_quit_on_keypress(
 }
 
 /// This function is responsible for intializing the boot menu.
-pub fn init(system_table: &SystemTable<Boot>) {
+pub fn init(system_table: &SystemTable<Boot>, boot_config: &BootConfigutation) {
     logger::clear();
 
     println!("Ion {} ", env!("CARGO_PKG_VERSION"));
     println!("Select entry:\n");
 
-    for i in (0..5).rev() {
+    for i in (0..boot_config.timeout).rev() {
+        logger::set_cursor_pos(0, logger::display_height() - 24);
         logger::set_scroll_lock(true);
+
         println!(
             "Booting automatically in {}, press any key to stop the countdown...",
             i
         );
+
         logger::set_scroll_lock(false);
 
         if pit_sleep_and_quit_on_keypress(system_table, 1).is_some() {

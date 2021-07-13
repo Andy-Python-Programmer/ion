@@ -1,19 +1,11 @@
 use uefi::prelude::*;
+use uefi::proto::console::text::{Input, Key};
 use uefi::proto::media::file::{Directory, File, FileAttribute, FileInfo, FileMode, RegularFile};
 use uefi::table::boot::{AllocateType, MemoryType};
 
-const CONFIG_PATHS: &[&str] = &[
-    "boot\\ion.cfg",
-    "ion.cfg",
-    // Fallback on limine configuration as they are still
-    // compatable.
-    "boot\\limine.cfg",
-    "limine.cfg",
-    // Fallback on tomato configuration as they are still
-    // compatable.
-    "boot\\tomatoboot.cfg",
-    "tomatoboot.cgh",
-];
+use crate::prelude::*;
+
+const CONFIG_PATHS: &[&str] = &["boot\\ion.cfg", "ion.cfg"];
 
 #[derive(Debug, Clone, Copy)]
 pub enum BootProtocol {
@@ -32,8 +24,43 @@ struct ConfigurationEntry {
     command_line: &'static str,
 }
 
+#[derive(Debug)]
+pub struct BootConfigutation {
+    pub(super) timeout: usize,
+}
+
+/// This function is responsible for wating for a keystroke event and returns the respective
+/// key code for that keystroke.
+fn get_char(system_table: &SystemTable<Boot>) -> Key {
+    unsafe {
+        // Retrieve the input protocol from the boot services,
+        let input_protocol = system_table
+            .boot_services()
+            .locate_protocol::<Input>()
+            .expect_success("Failed to locate input protocol");
+
+        let key = &mut *input_protocol.get(); // Get the inner cell value
+        let wait_for_key_event = key.wait_for_key_event(); // Get a reference to the wait for key event
+
+        // Loop until there is a keyboard event
+        loop {
+            system_table
+                .boot_services()
+                .wait_for_event(&mut [wait_for_key_event])
+                .expect_success("Failed add event in wait queue");
+
+            // Try and read the next keystroke from the input device, if any.
+            let scancode = key.read_key().expect_success("Failed to read key");
+
+            if let Some(code) = scancode {
+                return code;
+            }
+        }
+    }
+}
+
 /// This function is responsible for loading and parsing the config file for Ion.
-pub fn load(system_table: &SystemTable<Boot>, mut root: Directory) {
+pub fn load(system_table: &SystemTable<Boot>, mut root: Directory) -> BootConfigutation {
     let mut configuration_file = None;
 
     // Go through each possible config path and initialize the configuration_file
@@ -48,9 +75,22 @@ pub fn load(system_table: &SystemTable<Boot>, mut root: Directory) {
         }
     }
 
-    // TODO: Print a friendly message that the configuration file does not exist and add a built-in
-    // terminal way to create the config file on the fly.
-    let configuration_file = configuration_file.expect("No configuration file found");
+    let configuration_file = if let Some(config) = configuration_file {
+        config
+    } else {
+        println!("Configuration file not found.\n");
+
+        println!("For information on the format of Ion config entries, consult CONFIG.md in");
+        println!("the root of the Ion source repository.\n");
+
+        println!("Press a key to enter an editor session and manually define a config entry...");
+        let _ = get_char(system_table);
+
+        // TODO: Print a friendly message that the configuration file does not exist and add a built-in
+        // terminal way to create the config file on the fly.
+        unreachable!()
+    };
+
     let mut cfg_file_handle = unsafe { RegularFile::new(configuration_file) };
 
     let mut info_buf = [0; 0x100];
@@ -73,6 +113,11 @@ pub fn load(system_table: &SystemTable<Boot>, mut root: Directory) {
     let configuration_str = core::str::from_utf8(buf).expect("Invalid UTF-8 in configuration file");
 
     let mut current_entry = None;
+
+    let mut boot_config = BootConfigutation {
+        // We set the default time out to 5 seconds.
+        timeout: 5,
+    };
 
     // Create the menu tree.
     for line in configuration_str.split("\n") {
@@ -131,6 +176,20 @@ pub fn load(system_table: &SystemTable<Boot>, mut root: Directory) {
             }
         } else {
             // In this case we got a global key.
+            if let Some(key_idx) = line.find("=") {
+                let mut local_chars = line.chars();
+                local_chars.nth(key_idx); // Skip the key
+
+                let value = local_chars.as_str(); // Left with the value
+
+                if line.starts_with("TIMEOUT") {
+                    boot_config.timeout = value
+                        .parse::<usize>() // Parse the timeout as a usize
+                        .expect("Failed to parse timeout provided in the config file");
+                }
+            }
         }
     }
+
+    boot_config
 }

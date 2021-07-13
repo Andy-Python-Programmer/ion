@@ -63,7 +63,6 @@ fn efi_main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         .expect_success("Failed to clear system stdout");
 
     init_logger(&system_table);
-    menu::init(&system_table);
 
     // Query the handle for the loaded image protocol.
     let loaded_image = system_table
@@ -84,7 +83,9 @@ fn efi_main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         .open_volume()
         .expect_success("Failed to open volume");
 
-    let _ion_config = config::load(&system_table, root); // Load the config and store it in a local variable.
+    let boot_config = config::load(&system_table, root); // Load the config and store it in a local variable.
+
+    menu::init(&system_table, &boot_config);
 
     loop {}
 }
