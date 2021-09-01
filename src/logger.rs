@@ -6,6 +6,8 @@ use font8x8::UnicodeFonts;
 use spin::mutex::SpinMutex;
 use spin::Once;
 
+use bit_field::BitField;
+
 /// Describes the layout and pixel format of a framebuffer.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -43,6 +45,17 @@ pub enum PixelFormat {
     BGR,
 }
 
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone)]
+pub struct Color(u32);
+
+impl Color {
+    #[inline]
+    pub fn new(hex: u32) -> Self {
+        Self(hex)
+    }
+}
+
 /// The global logger instance used for the `log` crate.
 pub static LOGGER: Once<LockedLogger> = Once::new();
 
@@ -52,8 +65,12 @@ pub struct LockedLogger(SpinMutex<Logger>);
 impl LockedLogger {
     /// Create a new instance that logs to the given framebuffer.
     #[inline]
-    pub fn new(framebuffer: &'static mut [u8], info: FrameBufferInfo) -> Self {
-        Self(SpinMutex::new(Logger::new(framebuffer, info)))
+    pub fn new(
+        framebuffer: &'static mut [u8],
+        backbuffer: &'static mut [u8],
+        info: FrameBufferInfo,
+    ) -> Self {
+        Self(SpinMutex::new(Logger::new(framebuffer, backbuffer, info)))
     }
 
     /// Force-unlocks the logger to prevent a deadlock.
@@ -83,25 +100,38 @@ impl log::Log for LockedLogger {
 
 struct Logger {
     framebuffer: &'static mut [u8],
+    backbuffer: &'static mut [u8],
+
     info: FrameBufferInfo,
 
     x_pos: usize,
     y_pos: usize,
 
     scroll_lock: bool,
+
+    fg: Color,
+    bg: Color,
 }
 
 impl Logger {
     #[inline]
-    fn new(framebuffer: &'static mut [u8], info: FrameBufferInfo) -> Self {
+    fn new(
+        framebuffer: &'static mut [u8],
+        backbuffer: &'static mut [u8],
+        info: FrameBufferInfo,
+    ) -> Self {
         Self {
             framebuffer,
+            backbuffer,
+
             info,
 
             x_pos: 0x00,
             y_pos: 0x00,
 
             scroll_lock: false,
+            fg: Color::new(u32::MAX),
+            bg: Color::new(u32::MIN),
         }
     }
 
@@ -130,28 +160,32 @@ impl Logger {
     fn write_rendered_char(&mut self, rendered: [u8; 8]) {
         for (y, byte) in rendered.iter().enumerate() {
             for (x, bit) in (0..8).enumerate() {
-                let alpha = if *byte & (1 << bit) == 0 { 0 } else { 255 };
-                self.write_pixel(self.x_pos + x, self.y_pos + y, alpha);
+                let draw = *byte & (1 << bit) == 0;
+                self.write_pixel(
+                    self.x_pos + x,
+                    self.y_pos + y,
+                    if draw { self.bg } else { self.fg },
+                );
             }
         }
 
         self.x_pos += 8;
     }
 
-    fn write_pixel(&mut self, x: usize, y: usize, intensity: u8) {
+    fn write_pixel(&mut self, x: usize, y: usize, color: Color) {
         let pixel_offset = y * self.info.stride + x;
-        let color = match self.info.pixel_format {
-            PixelFormat::RGB => [intensity, intensity, intensity / 2, 0],
-            PixelFormat::BGR => [intensity / 2, intensity, intensity, 0],
-        };
+        let color = [
+            (color.0.get_bits(0..8) & 255) as u8,
+            (color.0.get_bits(8..16) & 255) as u8,
+            (color.0.get_bits(16..24) & 255) as u8,
+            (color.0.get_bits(24..32) & 255) as u8,
+        ];
 
         let bits_per_pixel = self.info.bits_per_pixel;
         let byte_offset = pixel_offset * bits_per_pixel;
 
-        self.framebuffer[byte_offset..(byte_offset + bits_per_pixel)]
+        self.backbuffer[byte_offset..(byte_offset + bits_per_pixel)]
             .copy_from_slice(&color[..bits_per_pixel]);
-
-        let _ = unsafe { core::ptr::read_volatile(&self.framebuffer[byte_offset]) };
     }
 
     #[inline]
@@ -159,7 +193,7 @@ impl Logger {
         self.x_pos = 0;
         self.y_pos = 0;
 
-        self.framebuffer.fill(0x00)
+        self.backbuffer.fill(0x00)
     }
 
     #[inline]
@@ -185,6 +219,15 @@ impl Logger {
 
         self.carriage_return();
     }
+
+    fn flush(&mut self) {
+        // SAFETY: life is ment to be unsafe
+        unsafe {
+            self.backbuffer
+                .as_ptr()
+                .copy_to_nonoverlapping(self.framebuffer.as_mut_ptr(), self.framebuffer.len());
+        }
+    }
 }
 
 impl fmt::Write for Logger {
@@ -199,8 +242,8 @@ impl fmt::Write for Logger {
 
 /// This function is responsible for initializing the global logger
 /// instance.
-pub fn init(framebuffer: &'static mut [u8], info: FrameBufferInfo) {
-    let logger = LOGGER.call_once(move || LockedLogger::new(framebuffer, info));
+pub fn init(framebuffer: &'static mut [u8], backbuffer: &'static mut [u8], info: FrameBufferInfo) {
+    let logger = LOGGER.call_once(move || LockedLogger::new(framebuffer, backbuffer, info));
 
     log::set_logger(logger).expect("Logger already set");
     log::set_max_level(log::LevelFilter::Trace);
@@ -229,6 +272,24 @@ pub fn set_cursor_pos(x: usize, y: usize) {
     });
 }
 
+pub fn with_fg<F>(color: Color, f: F)
+where
+    F: FnOnce(),
+{
+    LOGGER.get().map(|l| {
+        let mut lock = l.0.lock();
+        let old = lock.fg;
+        lock.fg = color;
+        core::mem::drop(lock);
+        f();
+        let mut lock = l.0.lock();
+        lock.fg = old;
+    });
+}
+
+pub fn flush() {
+    LOGGER.get().map(|l| l.0.lock().flush());
+}
 pub fn display_height() -> usize {
     LOGGER.get().map(|l| l.0.lock().height()).unwrap()
 }
