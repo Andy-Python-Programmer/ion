@@ -9,6 +9,10 @@ if [ -d $ION_BUILD ]; then
     sudo rm -rf $ION_BUILD
 fi
 
+pushd $SPATH/test/stivale2
+make all
+popd
+
 mkdir $ION_BUILD
 
 dd if=/dev/zero bs=1M count=0 seek=64 of=$ION_BUILD/ion.hdd
@@ -23,8 +27,11 @@ sudo mkfs.fat -F 32 `cat loopback_dev`p1
 sudo mount `cat loopback_dev`p1 build/mnt
 
 sudo mkdir -p $ION_BUILD/mnt/EFI/BOOT
+sudo mkdir -p $ION_BUILD/mnt/boot
+
 sudo cp $SPATH/target/x86_64-unknown-uefi/release/ion.efi $ION_BUILD/mnt/EFI/BOOT/BOOTX64.EFI
 sudo cp $SPATH/ion.cfg $ION_BUILD/mnt/ion.cfg
+sudo cp $SPATH/test/stivale2/kernel.elf $ION_BUILD/mnt/boot/test.elf
 
 sync
 

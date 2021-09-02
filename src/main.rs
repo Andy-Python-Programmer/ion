@@ -15,9 +15,11 @@ extern crate alloc;
 use uefi::prelude::*;
 use uefi::proto::console::gop::GraphicsOutput;
 use uefi::proto::loaded_image::LoadedImage;
+use uefi::proto::media::file::{Directory, File, FileAttribute, FileInfo, FileMode, RegularFile};
 use uefi::proto::media::fs::SimpleFileSystem;
-use uefi::table::boot::MemoryType;
+use uefi::table::boot::{AllocateType, MemoryDescriptor, MemoryType};
 
+use core::mem;
 use core::panic::PanicInfo;
 
 mod config;
@@ -32,6 +34,12 @@ mod prelude {
 fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
     panic!("oom {:?}", layout)
 }
+
+pub struct BootPageTables {}
+
+/// Helper function to create and load the bootloader's page table and
+/// create a new page table for the kernel itself.
+fn setup_boot_paging() {}
 
 /// This function is responsible for initializing the logger for Ion and
 /// returns the physical address of the framebuffer.
@@ -76,6 +84,42 @@ fn init_logger(system_table: &SystemTable<Boot>) {
     logger::init(slice, backbuffer, info)
 }
 
+fn prepare_kernel(
+    system_table: &SystemTable<Boot>,
+    root: &mut Directory,
+    entry: &config::ConfigurationEntry,
+) -> &'static [u8] {
+    let parsed_uri = config::parse_uri(entry.path()).expect("stivale2: failed to parse the URI");
+    let uri = config::handle_uri_redirect(&parsed_uri, root);
+
+    assert_ne!(entry.path().len(), 0, "stivale2: KERNEL_PATH not specified");
+
+    let kernel_path = entry.path();
+    let file_completion = uri
+        .open(parsed_uri.path(), FileMode::Read, FileAttribute::empty())
+        .expect_success("stivale2: failed to open kernel file. Is its path correct?");
+
+    log::debug!("stivale2: loading kernel {}...\n", kernel_path);
+
+    let mut cfg_file_handle = unsafe { RegularFile::new(file_completion) };
+
+    let mut info_buf = [0; 0x100];
+    let cfg_info = cfg_file_handle
+        .get_info::<FileInfo>(&mut info_buf)
+        .unwrap_success();
+
+    let pages = cfg_info.file_size() as usize / 0x1000 + 1;
+    let mem_start = system_table
+        .boot_services()
+        .allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, pages)
+        .unwrap_success();
+
+    let buf = unsafe { core::slice::from_raw_parts_mut(mem_start as *mut u8, pages * 0x1000) };
+    let len = cfg_file_handle.read(buf).unwrap_success();
+
+    buf[..len].as_ref()
+}
+
 #[entry]
 fn efi_main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     system_table
@@ -115,10 +159,31 @@ fn efi_main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     let ion_config = config::load(&system_table, &mut root); // Load the config and store it in a local variable.
     let selected_entry = menu::init(&system_table, ion_config);
 
+    // We have to load the kernel before we exit the boot services since we rely on the
+    // simple file system boot services protocol to read the kernel from the disk into
+    // memory.
+    let kernel = prepare_kernel(&system_table, &mut root, &selected_entry);
+
+    let mmap_storage = {
+        let max_mmap_size =
+            system_table.boot_services().memory_map_size() + 8 * mem::size_of::<MemoryDescriptor>();
+
+        let ptr = system_table
+            .boot_services()
+            .allocate_pool(MemoryType::LOADER_DATA, max_mmap_size)
+            .expect_success("dispatch: failed to allocate pool for memory map");
+
+        unsafe { core::slice::from_raw_parts_mut(ptr, max_mmap_size) }
+    };
+
+    uefi::alloc::exit_boot_services();
+
+    system_table
+        .exit_boot_services(image_handle, mmap_storage)
+        .expect_success("ion: failed to exit the boot services");
+
     match selected_entry.protocol() {
-        config::BootProtocol::Stivale2 => {
-            protocols::stivale2::boot(&system_table, &mut root, selected_entry)
-        }
+        config::BootProtocol::Stivale2 => protocols::stivale2::boot(kernel),
 
         config::BootProtocol::Stivale => todo!(),
         config::BootProtocol::Multiboot => todo!(),
