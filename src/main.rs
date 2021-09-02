@@ -23,6 +23,7 @@ use core::panic::PanicInfo;
 mod config;
 mod logger;
 mod menu;
+mod protocols;
 mod prelude {
     pub use crate::{print, println};
 }
@@ -107,12 +108,23 @@ fn efi_main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     let filesystem = unsafe { &mut *filesystem.get() }; // Get the inner cell value
 
     // Open the root directory of the simple file system volume.
-    let root = filesystem
+    let mut root = filesystem
         .open_volume()
         .expect_success("failed to open volume");
 
-    let ion_config = config::load(&system_table, root); // Load the config and store it in a local variable.
-    menu::init(&system_table, ion_config);
+    let ion_config = config::load(&system_table, &mut root); // Load the config and store it in a local variable.
+    let selected_entry = menu::init(&system_table, ion_config);
+
+    match selected_entry.protocol() {
+        config::BootProtocol::Stivale2 => {
+            protocols::stivale2::boot(&system_table, &mut root, selected_entry)
+        }
+
+        config::BootProtocol::Stivale => todo!(),
+        config::BootProtocol::Multiboot => todo!(),
+        config::BootProtocol::Multiboot2 => todo!(),
+        config::BootProtocol::Linux => todo!(),
+    }
 
     loop {}
 }

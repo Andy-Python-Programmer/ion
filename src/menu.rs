@@ -2,8 +2,12 @@ use uefi::prelude::*;
 use uefi::proto::console::text::{Input, Key, ScanCode};
 use uefi::table::boot::{EventType, TimerTrigger, Tpl};
 
-use crate::config::{self, IonConfig};
-use crate::logger::{self, Color};
+use crate::config::{self, ConfigurationEntry};
+use crate::logger;
+
+use crate::config::IonConfig;
+use crate::logger::Color;
+
 use crate::prelude::*;
 
 /// This function is responsible for sleeping the provided amount of `seconds` and if
@@ -83,8 +87,9 @@ fn print_tree(boot_config: &IonConfig, selected_entry: usize) {
     logger::flush();
 }
 
-/// This function is responsible for intializing the boot menu.
-pub fn init(system_table: &SystemTable<Boot>, boot_config: IonConfig) {
+/// This function is responsible for intializing the boot menu. This function returns the
+/// index of the selected boot entry.
+pub fn init(system_table: &SystemTable<Boot>, boot_config: IonConfig) -> ConfigurationEntry {
     let mut selected_entry = 0;
     let mut done_timeout = false;
 
@@ -126,6 +131,8 @@ pub fn init(system_table: &SystemTable<Boot>, boot_config: IonConfig) {
                             .checked_sub(1)
                             .unwrap_or(boot_config.entries.len() - 1);
 
+                        // Breaking out of this loop will cause the parent draw loop to
+                        // continue.
                         break;
                     }
 
@@ -136,13 +143,27 @@ pub fn init(system_table: &SystemTable<Boot>, boot_config: IonConfig) {
                             selected_entry = 0;
                         }
 
+                        // Breaking out of this loop will cause the parent draw loop to
+                        // continue.
                         break;
                     }
 
                     _ => (),
                 },
 
-                _ => (),
+                Key::Printable(c) => {
+                    let c: char = c.into();
+
+                    match c {
+                        // UEFI wierdness the ENTER key returns a carriage return so we have to match
+                        // on that.
+                        '\r' => {
+                            return boot_config.entries[selected_entry].clone();
+                        }
+
+                        _ => (),
+                    }
+                }
             }
         }
     }

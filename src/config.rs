@@ -1,3 +1,5 @@
+use alloc::string::String;
+use alloc::vec::Vec;
 use uefi::prelude::*;
 use uefi::proto::console::text::{Input, Key};
 use uefi::proto::media::file::{Directory, File, FileAttribute, FileInfo, FileMode, RegularFile};
@@ -16,6 +18,7 @@ pub enum BootProtocol {
     Linux,
 }
 
+#[derive(Clone)]
 pub struct ConfigurationEntry {
     protocol: BootProtocol,
     path: &'static str,
@@ -24,7 +27,19 @@ pub struct ConfigurationEntry {
 }
 
 impl ConfigurationEntry {
-    /// Returns the name of the configuration entry.
+    /// Returns the path of the kernel in the config entry.
+    #[inline]
+    pub fn path(&self) -> &'static str {
+        self.path
+    }
+
+    /// Returns the boot protocol of the kernel in the config entry.
+    #[inline]
+    pub fn protocol(&self) -> BootProtocol {
+        self.protocol
+    }
+
+    /// Returns the name of the kernel in the config entry.
     #[inline]
     pub fn name(&self) -> &'static str {
         self.name
@@ -78,8 +93,108 @@ pub fn get_char(system_table: &SystemTable<Boot>) -> Key {
     }
 }
 
+pub struct Uri {
+    resource: String,
+    partition: Option<usize>,
+    path: String,
+}
+
+impl Uri {
+    /// Returns the path component of the URI.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum UriParseError {
+    /// Missing the resource part of the URI. (e.g. `:///root/path`)
+    MissingResource,
+    /// Invalid syntax for the URI. (e.g. `://`, `:^)` or invalid partition number.)
+    InvalidSyntax,
+    /// Invalid partition number or the provided partition number is out of bounds
+    /// `0..256`.
+    InvalidPartition,
+}
+
+pub fn handle_uri_redirect<'a>(parsed_uri: &Uri, root: &'a mut Directory) -> &'a mut Directory {
+    match parsed_uri.resource.as_ref() {
+        "boot" => {
+            if parsed_uri.partition.is_some() {
+                unimplemented!()
+            } else {
+                // The user has not provided a partition number, so we will
+                // use the root directory of the boot partition instead.
+                root
+            }
+        }
+
+        "hdd" => unimplemented!(),
+        "odd" => unimplemented!(),
+        "guid" => unimplemented!(),
+        "uuid" => unimplemented!(),
+
+        "bios" => {
+            panic!(
+                "bios:// resource is no longer supported. Checkout CONFIG.md for hdd:// and odd://"
+            )
+        }
+
+        resource => panic!("unsupported resource type: {}", resource),
+    }
+}
+
+/// Helper function to parse the path URI. A URI takes the form of:
+/// `resource:///root/path`. This function will return false if the URI is
+/// not valid.
+pub fn parse_uri(uri: &'static str) -> Result<Uri, UriParseError> {
+    // 1. Seperate the domain from the URI.
+    let uri = uri.split(':').collect::<Vec<_>>();
+
+    // ERROR: missing the resource
+    if uri.len() == 0 {
+        return Err(UriParseError::MissingResource);
+    }
+
+    let resource = uri[0];
+    let root = uri[1];
+
+    // ERROR: missing the double backslashes after the resource.
+    if root.len() < 3 || &root[0..2] != "//" {
+        return Err(UriParseError::InvalidSyntax);
+    }
+
+    let root = root[2..].split("/").collect::<Vec<_>>();
+
+    // ERROR: Missing the root partition number (or a backslash indicating
+    // that we have to use the boot partition) and the root directory itself and
+    // the path.
+    if root.len() < 3 {
+        return Err(UriParseError::InvalidSyntax);
+    }
+
+    let partition = match root[0] {
+        "" => None,
+        n => Some(
+            n.parse::<usize>()
+                .or(Err(UriParseError::InvalidPartition))?,
+        ),
+    };
+
+    // 2. Convert the provided path to a UEFI path. Since UEFI paths use
+    // windows type of forward slashes as the path seperator and the URI
+    // uses backslashes instead.
+    let path = root[1..].join("\\");
+
+    Ok(Uri {
+        resource: String::from(resource),
+        partition,
+        path,
+    })
+}
+
 /// This function is responsible for loading and parsing the config file for Ion.
-pub fn load(system_table: &SystemTable<Boot>, mut root: Directory) -> IonConfig {
+pub fn load(system_table: &SystemTable<Boot>, root: &mut Directory) -> IonConfig {
     let mut configuration_file = None;
 
     // Go through each possible config path and initialize the configuration_file
