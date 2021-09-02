@@ -4,7 +4,7 @@
     asm,
     panic_info_message,
     alloc_error_handler,
-    option_result_unwrap_unchecked
+    maybe_uninit_slice
 )]
 #![test_runner(crate::test_runner)]
 #![no_std]
@@ -18,6 +18,9 @@ use uefi::proto::loaded_image::LoadedImage;
 use uefi::proto::media::file::{Directory, File, FileAttribute, FileInfo, FileMode, RegularFile};
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::table::boot::{AllocateType, MemoryDescriptor, MemoryType};
+use x86_64::registers::control::{Cr3, Cr3Flags};
+use x86_64::structures::paging::*;
+use x86_64::VirtAddr;
 
 use core::mem;
 use core::panic::PanicInfo;
@@ -25,6 +28,7 @@ use core::panic::PanicInfo;
 mod config;
 mod logger;
 mod menu;
+mod pmm;
 mod protocols;
 mod prelude {
     pub use crate::{print, println};
@@ -35,11 +39,79 @@ fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
     panic!("oom {:?}", layout)
 }
 
-pub struct BootPageTables {}
+pub struct BootPageTables {
+    /// Provides access to the page tables of the bootloader address space.
+    pub bootloader: OffsetPageTable<'static>,
+    /// Provides access to the page tables of the kernel address space (not active).
+    pub kernel: OffsetPageTable<'static>,
+    /// The physical frame where the level 4 page table of the kernel address space is stored.
+    pub kernel_level_4_frame: PhysFrame,
+}
 
 /// Helper function to create and load the bootloader's page table and
 /// create a new page table for the kernel itself.
-fn setup_boot_paging() {}
+fn setup_boot_paging(frame_allocator: &mut impl FrameAllocator<Size4KiB>) -> BootPageTables {
+    // NOTE: UEFI identity-maps all memory, so the offset between physical
+    // and virtual addresses is 0.
+    let off = VirtAddr::zero();
+
+    let boot_page_table = {
+        let old_table = {
+            let (frame, _) = Cr3::read();
+
+            let ptr: *const PageTable = (off + frame.start_address().as_u64()).as_ptr();
+
+            unsafe { &*ptr }
+        };
+
+        let new_frame = frame_allocator
+            .allocate_frame()
+            .expect("mm: failed to allocate frame for new level 4 boot table");
+
+        let new_table: &mut PageTable = {
+            let ptr: *mut PageTable = (off + new_frame.start_address().as_u64()).as_mut_ptr();
+
+            unsafe {
+                // Create a new empty, fresh page table.
+                ptr.write(PageTable::new());
+                &mut *ptr
+            }
+        };
+
+        // Copy the first entry (we don't need to access more than 512 GiB; also, some UEFI
+        // implementations seem to create an level 4 table entry 0 in all slots)
+        new_table[0] = old_table[0].clone();
+
+        // The first level 4 table entry is now identical, so we can just load the new one.
+        unsafe {
+            Cr3::write(new_frame, Cr3Flags::empty());
+            OffsetPageTable::new(&mut *new_table, off)
+        }
+    };
+
+    // Now we will create a page table for the kernel itself.
+    let (kernel_page_table, kernel_level_4_frame) = {
+        // get an unused frame for new level 4 page table
+        let frame: PhysFrame = frame_allocator.allocate_frame().expect("no unused frames");
+        log::info!("New page table at: {:#?}", &frame);
+
+        // 1. Get the corresponding virtual address.
+        let addr = off + frame.start_address().as_u64();
+
+        // 2. Initialize a new page table.
+        let ptr = addr.as_mut_ptr();
+        unsafe { *ptr = PageTable::new() };
+        let level_4_table = unsafe { &mut *ptr };
+
+        (unsafe { OffsetPageTable::new(level_4_table, off) }, frame)
+    };
+
+    BootPageTables {
+        bootloader: boot_page_table,
+        kernel: kernel_page_table,
+        kernel_level_4_frame,
+    }
+}
 
 /// This function is responsible for initializing the logger for Ion and
 /// returns the physical address of the framebuffer.
@@ -178,12 +250,17 @@ fn efi_main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
 
     uefi::alloc::exit_boot_services();
 
-    system_table
+    let (_, mmap) = system_table
         .exit_boot_services(image_handle, mmap_storage)
         .expect_success("ion: failed to exit the boot services");
 
+    let mut allocator = pmm::BootFrameAllocator::new(mmap.copied());
+    let mut offset_tables = setup_boot_paging(&mut allocator);
+
     match selected_entry.protocol() {
-        config::BootProtocol::Stivale2 => protocols::stivale2::boot(kernel),
+        config::BootProtocol::Stivale2 => {
+            protocols::stivale2::boot(&mut offset_tables, &mut allocator, kernel)
+        }
 
         config::BootProtocol::Stivale => todo!(),
         config::BootProtocol::Multiboot => todo!(),

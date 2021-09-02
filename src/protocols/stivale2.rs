@@ -1,14 +1,19 @@
-use crate::config::ConfigurationEntry;
 use crate::logger;
+use crate::BootPageTables;
 
 use raw_cpuid::CpuId;
 use stivale_boot::v2::StivaleHeader;
 
+use x86_64::structures::paging::*;
 use xmas_elf::program::ProgramHeader;
 
 fn handle_load_segment(header: ProgramHeader) {}
 
-pub fn boot(kernel: &'static [u8]) {
+pub fn boot(
+    offset_table: &mut BootPageTables,
+    allocator: &mut impl FrameAllocator<Size4KiB>,
+    kernel: &'static [u8],
+) {
     logger::clear();
     logger::flush();
 
