@@ -1,45 +1,46 @@
 OUTPUT_FORMAT(elf64-x86-64)
 ENTRY(_start)
 
+PHDRS
+{
+    null    PT_NULL    FLAGS(0) ;                   /* Null segment */
+    text    PT_LOAD    FLAGS((1 << 0) | (1 << 2)) ; /* Execute + Read */
+    rodata  PT_LOAD    FLAGS((1 << 2)) ;            /* Read only */
+    data    PT_LOAD    FLAGS((1 << 1) | (1 << 2)) ; /* Write + Read */
+}
+
 /* We want to be placed in the higher half, 2MiB above 0x00 in physical memory */
 KERNEL_OFFSET = 0xFFFFFFFF80200000;
 
 SECTIONS {
     . = KERNEL_OFFSET;
 
+    .text : {
+        *(.text*)
+    } :text
+
+    /* Move to the next memory page for .rodata */
+    . += 0x1000;
+
     /* We place the .stivale2hdr section containing the header in its own section, */
     /* and we use the KEEP directive on it to make sure it doesn't get discarded. */
-    .stivale2hdr : ALIGN(4K) {
+    .stivale2hdr : {
         KEEP(*(.stivale2hdr))
-    }
-
-    /* Then place all of the other traditional executable sections afterwards... */
-    .text : {
-        __text_start = .;
-        *(.text*)
-        . = ALIGN(4096);
-        __text_end = .;
-    }
+    } :rodata
 
     .rodata : {
-        __rodata_start = .;
         *(.rodata*)
-        . = ALIGN(4096);
-        __rodata_end = .;
-    }
+    } :rodata
+
+    /* Move to the next memory page for .data */
+    . += 0x1000;
 
     .data : {
-        __data_start = .;
         *(.data*)
-        *(.got*)
-        . = ALIGN(4096);
-        __data_end = .;
-    }
+    } :data
 
     .bss : {
-        __bss_start = .;
+        *(COMMON)
         *(.bss*)
-        . = ALIGN(4096);
-        __bss_end = .;
-    }
+    } :data
 }
