@@ -1,5 +1,5 @@
-ENTRY(stivale_main)
 OUTPUT_FORMAT(elf64-x86-64)
+ENTRY(_start)
 
 /* We want to be placed in the higher half, 2MiB above 0x00 in physical memory */
 KERNEL_OFFSET = 0xFFFFFFFF80200000;
@@ -7,11 +7,8 @@ KERNEL_OFFSET = 0xFFFFFFFF80200000;
 SECTIONS {
     . = KERNEL_OFFSET;
 
-    . += SIZEOF_HEADERS;
-    . = ALIGN(4096);
-
-    __kernel_start = .;
-
+    /* We place the .stivale2hdr section containing the header in its own section, */
+    /* and we use the KEEP directive on it to make sure it doesn't get discarded. */
     .stivale2hdr : ALIGN(4K) {
         KEEP(*(.stivale2hdr))
     }

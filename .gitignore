@@ -1,5 +1,6 @@
-/target
+target
 build
+ovmf
 
 *.o
 *.elf

@@ -9,8 +9,6 @@ use x86_64::PhysAddr;
 pub enum MemoryRegionType {
     /// Unused conventional memory, can be used by the kernel.
     Usable,
-    /// Memory mappings created by the bootloader, including the kernel and boot info mappings.
-    Bootloader,
     UnknownUefi(u32),
 }
 
