@@ -92,8 +92,11 @@ fn setup_boot_paging(frame_allocator: &mut impl FrameAllocator<Size4KiB>) -> Boo
     // Now we will create a page table for the kernel itself.
     let (kernel_page_table, kernel_level_4_frame) = {
         // get an unused frame for new level 4 page table
-        let frame: PhysFrame = frame_allocator.allocate_frame().expect("no unused frames");
-        log::info!("New page table at: {:#?}", &frame);
+        let frame: PhysFrame = frame_allocator
+            .allocate_frame()
+            .expect("mm: no unused frames");
+
+        log::info!("new page table at: {:#?}", &frame);
 
         // 1. Get the corresponding virtual address.
         let addr = off + frame.start_address().as_u64();
@@ -253,6 +256,9 @@ fn efi_main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     let (_, mmap) = system_table
         .exit_boot_services(image_handle, mmap_storage)
         .expect_success("ion: failed to exit the boot services");
+
+    logger::clear();
+    logger::flush();
 
     let mut allocator = pmm::BootFrameAllocator::new(mmap.copied());
     let mut offset_tables = setup_boot_paging(&mut allocator);

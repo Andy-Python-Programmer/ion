@@ -1,8 +1,14 @@
+use core::mem::MaybeUninit;
+
 use crate::logger;
+use crate::pmm::BootFrameAllocator;
+use crate::pmm::BootMemoryRegion;
+use crate::pmm::MemoryRegion;
+use crate::pmm::UsedLevel4Entries;
 use crate::BootPageTables;
 
 use raw_cpuid::CpuId;
-use stivale_boot::v2::StivaleHeader;
+use stivale_boot::v2::*;
 
 use x86_64::align_up;
 use x86_64::registers::control::Cr0;
@@ -181,14 +187,62 @@ fn handle_load_segment(
     Ok(())
 }
 
-pub fn boot(
+fn allocate_boot_info_tag<T, I, D>(
     page_tables: &mut BootPageTables,
-    frame_allocator: &mut impl FrameAllocator<Size4KiB>,
-    kernel: &'static [u8],
-) {
-    logger::clear();
-    logger::flush();
+    frame_allocator: &mut BootFrameAllocator<I, D>,
+    useable_entries: &mut UsedLevel4Entries,
+    value: T,
+) -> &'static mut T
+where
+    I: ExactSizeIterator<Item = D> + Clone,
+    D: BootMemoryRegion,
+{
+    let addr = useable_entries.get_free_address();
+    let addr_end = addr + core::mem::size_of::<T>();
 
+    let memory_map_regions_addr = addr_end.align_up(core::mem::align_of::<MemoryRegion>() as u64);
+    let regions = frame_allocator.len() + 1; // one region might be split into used/unused
+    let memory_map_regions_end =
+        memory_map_regions_addr + regions * core::mem::size_of::<MemoryRegion>();
+
+    let start_page = Page::containing_address(addr);
+    let end_page = Page::containing_address(memory_map_regions_end - 1u64);
+    for page in Page::range_inclusive(start_page, end_page) {
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+        let frame = frame_allocator
+            .allocate_frame()
+            .expect("frame allocation for boot info failed");
+
+        unsafe {
+            page_tables
+                .kernel
+                .map_to(page, frame, flags, frame_allocator)
+        }
+        .unwrap()
+        .flush();
+
+        // We need to be able to access it too.
+        unsafe {
+            page_tables
+                .bootloader
+                .map_to(page, frame, flags, frame_allocator)
+        }
+        .unwrap()
+        .flush();
+    }
+
+    let boot_info: &'static mut MaybeUninit<T> = unsafe { &mut *addr.as_mut_ptr() };
+    boot_info.write(value)
+}
+
+pub fn boot<I, D>(
+    page_tables: &mut BootPageTables,
+    frame_allocator: &mut BootFrameAllocator<I, D>,
+    kernel: &'static [u8],
+) where
+    I: ExactSizeIterator<Item = D> + Clone,
+    D: BootMemoryRegion,
+{
     let kernel_offset = unsafe { PhysAddr::new_unsafe(&kernel[0] as *const u8 as u64) };
     assert!(
         kernel_offset.is_aligned(Size4KiB::SIZE),
@@ -271,10 +325,89 @@ pub fn boot(
         panic!("stivale2: the stack cannot be 0 for 32-bit kernels");
     }
 
-    // Now we have to prepare the stivale struct that we will pass as an argument
-    // in RDI to the kernel's entry point function.
+    // Identity-map context switch function, so that we don't get an immediate pagefault
+    // after switching the active page table.
+    let context_switch_function = PhysAddr::new(context_switch as *const () as u64);
+    let context_switch_function_start_frame: PhysFrame =
+        PhysFrame::containing_address(context_switch_function);
+
+    for frame in PhysFrame::range_inclusive(
+        context_switch_function_start_frame,
+        context_switch_function_start_frame + 1,
+    ) {
+        unsafe {
+            page_tables
+                .kernel
+                .identity_map(frame, PageTableFlags::PRESENT, frame_allocator)
+        }
+        .unwrap()
+        .flush();
+    }
 
     logger::flush();
+
+    let mut useable_entries = UsedLevel4Entries::new(elf.program_iter());
+
+    let offset = useable_entries.get_free_address();
+    let start_frame = PhysFrame::containing_address(PhysAddr::new(0));
+    let max_phys = frame_allocator.max_phys_addr();
+    let end_frame: PhysFrame<Size2MiB> = PhysFrame::containing_address(max_phys - 1u64);
+
+    for frame in PhysFrame::range_inclusive(start_frame, end_frame) {
+        let page = Page::containing_address(offset + frame.start_address().as_u64());
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+
+        unsafe {
+            page_tables
+                .kernel
+                .map_to(page, frame, flags, frame_allocator)
+        }
+        .unwrap()
+        .flush();
+    }
+
+    // Now we have to prepare the stivale struct that we will pass as an argument
+    // in RDI to the kernel's entry point function.
+    let stivale_struct = allocate_boot_info_tag(
+        page_tables,
+        frame_allocator,
+        &mut useable_entries,
+        StivaleStruct::new(),
+    );
+
+    stivale_struct.set_bootloader_brand("Ion");
+    stivale_struct.set_bootloader_version(env!("CARGO_PKG_VERSION"));
+
+    let switch_context = SwitchContext {
+        page_table: page_tables.kernel_level_4_frame,
+        stack_top: VirtAddr::new(stivale2_hdr.get_stack() as u64),
+        entry_point: VirtAddr::new(elf.header.pt2.entry_point()),
+        stivale_struct,
+    };
+
+    // SAFTEY: The stack and the kernel entry point are checked above.
+    unsafe {
+        context_switch(switch_context);
+    }
+}
+
+struct SwitchContext {
+    page_table: PhysFrame,
+    stack_top: VirtAddr,
+    entry_point: VirtAddr,
+    stivale_struct: &'static StivaleStruct,
+}
+
+unsafe fn context_switch(context: SwitchContext) -> ! {
+    asm!(
+        "mov cr3, {}; mov rsp, {}; push 0; jmp {}",
+        in(reg) context.page_table.start_address().as_u64(),
+        in(reg) context.stack_top.as_u64(),
+        in(reg) context.entry_point.as_u64(),
+        in("rdi") context.stivale_struct as *const _ as usize,
+    );
+
+    unreachable!()
 }
 
 fn enable_nxe_bit() {

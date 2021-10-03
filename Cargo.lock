@@ -111,7 +111,6 @@ dependencies = [
 [[package]]
 name = "stivale-boot"
 version = "0.2.3"
-source = "git+https://github.com/Andy-Python-Programmer/stivale/#e22a31a0ee9bebbceb7fb79d1ae2ef0e4497a364"
 dependencies = [
  "bitflags",
 ]

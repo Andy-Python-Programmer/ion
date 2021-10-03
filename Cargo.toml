@@ -10,7 +10,7 @@ uart_16550 = "0.2.15"
 bit_field = "0.10.1"
 xmas-elf = "0.8.0"
 raw-cpuid = "10.2.0"
-stivale-boot = { git = "https://github.com/Andy-Python-Programmer/stivale/" }
+stivale-boot = { path = "../stivale" }
 x86_64 = "0.14.4"
 
 [dependencies.uefi]

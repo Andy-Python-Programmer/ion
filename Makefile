@@ -48,7 +48,11 @@ uefi-stivale2-test:
 	@ rm -rf build/mnt/ loopback_dev
 
 	@ printf '\033[32;1mOK:\033[0m Running UEFI stivale2 test kernel in Qemu...'
-	@ qemu-system-x86_64 -machine type=q35 -serial stdio -drive format=raw,file=build/ion.hdd -bios ../aero/bundled/ovmf/OVMF-pure-efi.fd
+	@ qemu-system-x86_64 -machine type=q35 -serial stdio -drive format=raw,file=build/ion.hdd \
+		-bios ../aero/bundled/ovmf/OVMF-pure-efi.fd \
+		-d int \
+		-D qemulog.uefi.log \
+		--no-reboot
 
 # Clean up build directory.
 clean:
